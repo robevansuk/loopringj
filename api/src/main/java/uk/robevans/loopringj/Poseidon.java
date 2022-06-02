@@ -2,15 +2,16 @@ package uk.robevans.loopringj;
 
 //from ..field import SNARK_SCALAR_FIELD
 
+import com.google.common.math.BigIntegerMath;
 import org.bouncycastle.crypto.digests.Blake2bDigest;
 
 import java.math.BigInteger;
+import java.math.RoundingMode;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -20,7 +21,7 @@ public class Poseidon {
 
     private static final Map<String, Map> PoseidonParamsType = new ConcurrentHashMap();
 
-    private final BigInteger SNARK_SCALAR_FIELD = new BigInteger("21888242871839275222246405745257275088548364400416034343698204186575808495617");
+    public static final BigInteger SNARK_SCALAR_FIELD = new BigInteger("21888242871839275222246405745257275088548364400416034343698204186575808495617");
     private final int t = 6;
     private final int nRoundsF = 8;
     private final int nRoundsP = 57;
@@ -41,39 +42,57 @@ public class Poseidon {
         params.put("e", null);
         params.put("constants_C", null);
         params.put("constants_M", null);
+        params.put("security_target", null);
     }
 
-    public Map<String, Map> poseidon_params(int p, int t, int nRoundsF, int nRoundsP,
-                                byte[] seed, int e, Integer[] constants_C,
+    public Poseidon(BigInteger p, int t, int nRoundsF, int nRoundsP,
+                    byte[] seed, int e, BigInteger[] constants_C,
+                    Double[][] constants_M, Double security_target) {
+        HashMap params = new HashMap<String, String>();
+        PoseidonParamsType.put("PoseidonParams", params);
+        params.put("p", p);
+        params.put("t", t);
+        params.put("nRoundsF", nRoundsF);
+        params.put("nRoundsP", nRoundsP);
+        params.put("seed", seed);
+        params.put("e", e);
+        params.put("constants_C", constants_C);
+        params.put("constants_M", constants_M);
+        params.put("security_target", security_target);
+    }
+
+    public Map<String, Map> poseidon_params(BigInteger p, int t, int nRoundsF, int nRoundsP,
+                                byte[] seed, int e, BigInteger[] constants_C,
                                 Double[][] constants_M, Double security_target) {
         if (nRoundsF % 2 != 0 && nRoundsF <= 0
                 && nRoundsP <= 0 && t < 2) {
             throw new RuntimeException();
         }
 
-        Double n = Math.floor(Math.log(p) / Math.log(2));
-        Double M = null;
+
+        BigInteger n = BigInteger.valueOf(BigIntegerMath.log2(p, RoundingMode.FLOOR));
+        BigInteger M = null;
         if (security_target == null) {
             M = n;  // security target, in bits
         } else {
-            M = security_target;
+            M = BigInteger.valueOf(security_target.longValue());
         }
-        if (n < M) {
+        if (n.compareTo(M) < 0) {
             throw new RuntimeException("n must be greater than M");
         }
 
         // Size of the state (in bits)
-        Double N = n * t;
+        Double N = Double.valueOf(n.intValue() * t);
         Double grobner_attack_ratio_rounds = 0d;
         Double grobner_attack_ratio_sboxes = 0d;
         Double interpolation_attack_ratio = 0d;
 
-        if (p % 2 == 3) {
+        if (p.mod(BigInteger.valueOf(2)) == BigInteger.valueOf(3)) {
             assert (e == 3);
             grobner_attack_ratio_rounds = 0.32;
             grobner_attack_ratio_sboxes = 0.18;
             interpolation_attack_ratio = 0.63;
-        } else if (p % 5 != 1) {
+        } else if (p.mod(BigInteger.valueOf(5)) != BigInteger.valueOf(1)) {
             assert (e == 5);
             grobner_attack_ratio_rounds = 0.21;
             grobner_attack_ratio_sboxes = 0.14;
@@ -83,18 +102,21 @@ public class Poseidon {
             throw new RuntimeException("Invalid p for congruency");
         }
 
+        Integer nInt = n.intValue();
+        Integer MInt = M.intValue();
+
         // Verify that the parameter choice exceeds the recommendations to prevent attacks
         // iacr.org/2019/458 § 3 Cryptanalysis Summary of Starkad and Poseidon Hashes (pg 10)
         // Figure 1
         // print('(nRoundsF + nRoundsP)', (nRoundsF + nRoundsP))
         // print('Interpolation Attackable Rounds', ((interpolation_attack_ratio * min(n, M)) + log2(t)))
-        assert (nRoundsF + nRoundsP) > ((interpolation_attack_ratio * Math.min(n, M)) + (Math.log(t) / Math.log(2)));
+        assert (nRoundsF + nRoundsP) > ((interpolation_attack_ratio * Math.min(nInt, MInt)) + (Math.log(t) / Math.log(2)));
         // Figure 3
         //print('grobner_attack_ratio_rounds', ((2 + min(M, n)) * grobner_attack_ratio_rounds))
-        assert (nRoundsF + nRoundsP) > ((2 + Math.min(M, n)) * grobner_attack_ratio_rounds);
+        assert (nRoundsF + nRoundsP) > ((2 + Math.min(MInt, nInt)) * grobner_attack_ratio_rounds);
         // Figure 4
         //print('grobner_attack_ratio_sboxes', (M * grobner_attack_ratio_sboxes))
-        assert (nRoundsF + (t * nRoundsP)) > (M * grobner_attack_ratio_sboxes);
+        assert (nRoundsF + (t * nRoundsP)) > (MInt * grobner_attack_ratio_sboxes);
 
         // iacr.org/2019/458 § 4.1 Minimize "Number of S-Boxes"
         // In order to minimize the number of S-boxes for given `n` and `t`, the goal is to and
@@ -146,29 +168,31 @@ public class Poseidon {
     }
 
 
-    public Integer[] poseidon_constants(int p, byte[] seed, int n){
-        Integer[] typedArray = new Integer[n];
-        List<Integer> result = new ArrayList();
+    public BigInteger[] poseidon_constants(BigInteger p, byte[] seed, int n){
+        BigInteger[] typedArray = new BigInteger[n];
+        List<BigInteger> result = new ArrayList();
         for(int i=0; i<n; i++) {
             seed = H(seed);
-            result.add(fromByteArray(seed) % p);
+            result.add(BigInteger.valueOf(fromByteArray(seed)).mod(p));
         }
         return result.toArray(typedArray);
     }
 
 
-    public Double[][] poseidon_matrix(int p, byte[] seed, int t) {
+    public Double[][] poseidon_matrix(BigInteger p, byte[] seed, int t) {
 //        """
 //                iacr.org/2019/458 § 2.3 About the MDS Matrix (pg 8)
 //                Also:
 //                 - https://en.wikipedia.org/wiki/Cauchy_matrix
 //                """
 
-        Integer[] c = poseidon_constants(p, seed, t * 2);
+        BigInteger[] c = poseidon_constants(p, seed, t * 2);
         Double[][] result = new Double[t][t];
         for (int i=0; i<t; i++) {
             for (int j = 0; j < t; j++) {
-                result[i][j] = Math.pow((c[i] - c[t + j]) % p, p - 2) % p;
+                // split this up in to two steps. Ugly as hell but might work
+                result[i][j] = Math.pow((c[i].subtract(c[t + j])).mod(p).doubleValue(), p.subtract(BigInteger.valueOf(2)).doubleValue());
+                result[i][j] = BigInteger.valueOf(result[i][j].longValue()).mod(p).doubleValue();
             }
         }
 
